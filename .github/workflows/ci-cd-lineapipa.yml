@@ -1,0 +1,153 @@
+# This workflow will do a clean installation of node dependencies, cache/restore them, build the source code and run tests across different versions of node
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-nodejs
+
+# Cómo se llamará el workflow dentro del repositorio, este es el nombre que va a aparecer en Acciones y es el que elegí jeje
+name: CI/CD LineaPipa
+
+# Aquí se define cuándo se va a ejecutar o "disparar" el workflow
+on:
+# Indica que deberá ejecutarse cada que alguien haga un push a estas ramas
+  push:
+    branches:
+      - main      # La rama main o master, es la principal en la que va el código estable.
+      - develop   # La rama de desarrollo o para desarrollador, por lo general para hacer cambios y aportes al código de forma aislada de la rama principal para probar las cosas nuevas antes de que lleguen al main y asi evitar afectarlo, no vaya a ser
+
+# También correrá el workflow si alguien hace un Pull Request (PR) hacia estas dos ramas
+  pull_request:
+    branches:
+      - main
+      - develop
+
+# Variables de entorno globales
+env:
+  NODE_VERSION: '20.X' # define la versión de node que se va a usar en todo
+
+jobs:
+# ============================================
+# JOB 1: LINTING Y VERIFICACIÓN DE CÓDIGO
+# ============================================
+# Revisa que el código esté "escrito bonito" y "sin errores de sintaxis" o estilo, a veces causa más problemas que otra cosa en la vida, pero bien hecho lo vale
+  lint:
+    name: Lint Code
+    runs-on: ubuntu-latest # le dice a GitHub que use una máquina virtual con Ubuntu para correr este trabajo
+
+    steps:
+# Paso 1: Descarga el código
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+# Paso 2: Configura Node.js pone la versión de Node que definimos arriba en la máquina virtual.
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm' # Cachea las dependencias de npm y si ya instaló algo antes, lo reutiliza, asi que en teoría deberia ser más eficiente
+
+# Paso 3: Instala las dependencias del proyecto.
+      - name: Install dependencies
+        run: npm ci # "npm ci" es la versión de instalación para Integración Continua o CI, es más rápida y menos propensa a fallar que la normal.
+
+# Paso 4: Ejecuta ESLint. Si hay un error de estilo o algo que no le guste al linter, este job explota y pega alaridos.
+      - name: Run ESLint
+        run: npm run lint
+
+# -----------------------------------------------------------------------------
+# ============================================
+# JOB 2: BUILD DEL PROYECTO
+# ============================================
+# Es el constructor, agarra el código fuente y lo compila, dejándolo listo para poder usarlo
+  build:
+    name: Build Application
+    runs-on: ubuntu-latest
+    needs: lint # Tal parece que si el lint falla o tiene algun problema, el job no va a arrancar siquiera porque depende del Lint
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+# Genera el cliente de Prisma, requisito para poder compilar si se tiene una base de datos
+      - name: Generate Prisma Client
+        run: npx prisma generate
+
+# Compila la aplicación, genera el resultado final, por lo general en un 'dist'
+      - name: Build project
+        run: npm run build
+
+# Guarda los archivos compilados "dist" como un "artefacto", y se supone que de esa manera los jobs pueden ocuparlo luego
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 1 # Lo guarda por un día y si nadie lo usa, se borra solito
+
+# -----------------------------------------------------------------------------
+# ============================================
+# JOB 3: TESTS UNITARIOS
+# ============================================
+# Este es el job de "control de calidad", ejecuta las pruebas automatizadas para ver si algo se dañó o se rompió con los cambios/updates
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    needs: build # Se requiere de la versión compilada del código para poder hacerle pruebas
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma Client
+        run: npx prisma generate
+
+# Ejecuta las pruebas unitarias usando Jest (o lo que sea que esté configurado)
+      - name: Run unit tests
+        run: npm run test -- --passWithNoTests
+        # El flag '--passWithNoTests' es un "salvavidas" o eso entendí, permite que el job pase aunque no haya ningún test escrito aún
+
+# Corre los tests de nuevo, pero ahora para generar el reporte de cobertura
+      - name: Run tests with coverage
+        run: npm run test:cov -- --passWithNoTests
+
+# Sube el reporte de cobertura. Así se puede visualizar si se estan cubriendo suficientes líneas de código.
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 7
+
+# -----------------------------------------------------------------------------
+# ============================================
+# JOB 4: NOTIFICACIÓN DE ESTADO (OPCIONAL)
+# ============================================
+# El job final, básicamente lo que hace es decir si todo salió bien, o si hubo alguna problema/inconveniente/cag*d*
+  notify:
+    name: Notify Status
+    runs-on: ubuntu-latest
+    needs: [test] # Espera a que el test termine para dar una conclusión o veredicto
+    if: always() # Fuerza a estar permanentemente ejecutándose, incluso si el build o el test fallaron, es importante saber
+
+    steps:
+      - name: Check workflow status
+        run: |
+          echo "Pipeline execution completed!"
+          echo "Deploy status: ${{ needs.deploy.result }}"
+# Le pregunté a Gemini por esa linea para entenderla mejor y me dijo: La variable "needs.deploy.result" está chequeando el resultado de un job llamado 'deploy' (que no tienes aquí). Si lo incluyes después, esta línea te dirá si el despliegue funcionó o falló. ¡Muy útil para saber el estado final!
+          
